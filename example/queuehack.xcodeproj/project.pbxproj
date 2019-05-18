@@ -16,8 +16,8 @@
 		E4594EF42285DE0A00CAC31D /* sqlitePersisterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4594EF32285DE0A00CAC31D /* sqlitePersisterTests.swift */; };
 		E4CAB8A422866DE70022D0D1 /* SwiftQueue.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E4CAB8A322866DE70022D0D1 /* SwiftQueue.framework */; };
 		E4CAB8A622866DEA0022D0D1 /* Reachability.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E4CAB8A522866DEA0022D0D1 /* Reachability.framework */; };
-		E4CAB8A822866DEF0022D0D1 /* CouchbaseLiteSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E4CAB8A722866DEF0022D0D1 /* CouchbaseLiteSwift.framework */; };
 		E4CAB8AB229091650022D0D1 /* SQLitePersister.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4CAB8AA229091650022D0D1 /* SQLitePersister.swift */; };
+		E4CAB8AD2290B7030022D0D1 /* Cartfile in Resources */ = {isa = PBXBuildFile; fileRef = E4CAB8AC2290B7030022D0D1 /* Cartfile */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -47,6 +47,7 @@
 		E4CAB8A522866DEA0022D0D1 /* Reachability.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Reachability.framework; path = Carthage/Build/iOS/Reachability.framework; sourceTree = "<group>"; };
 		E4CAB8A722866DEF0022D0D1 /* CouchbaseLiteSwift.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CouchbaseLiteSwift.framework; path = Carthage/Build/iOS/CouchbaseLiteSwift.framework; sourceTree = "<group>"; };
 		E4CAB8AA229091650022D0D1 /* SQLitePersister.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = SQLitePersister.swift; path = ../SQLitePersister.swift; sourceTree = "<group>"; };
+		E4CAB8AC2290B7030022D0D1 /* Cartfile */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = Cartfile; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -56,7 +57,6 @@
 			files = (
 				E4CAB8A422866DE70022D0D1 /* SwiftQueue.framework in Frameworks */,
 				E4CAB8A622866DEA0022D0D1 /* Reachability.framework in Frameworks */,
-				E4CAB8A822866DEF0022D0D1 /* CouchbaseLiteSwift.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -73,6 +73,7 @@
 		E4594EBD2284EBA300CAC31D = {
 			isa = PBXGroup;
 			children = (
+				E4CAB8AC2290B7030022D0D1 /* Cartfile */,
 				E4CAB8A9229091590022D0D1 /* SQLitePersister */,
 				E4594EC82284EBA300CAC31D /* queuehack */,
 				E4594EF22285DE0A00CAC31D /* queuehackTests */,
@@ -224,6 +225,7 @@
 			files = (
 				E4594ED42284EBA500CAC31D /* LaunchScreen.storyboard in Resources */,
 				E4594ED12284EBA500CAC31D /* Assets.xcassets in Resources */,
+				E4CAB8AD2290B7030022D0D1 /* Cartfile in Resources */,
 				E4594ECF2284EBA300CAC31D /* Main.storyboard in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -248,7 +250,6 @@
 			inputPaths = (
 				"$(SRCROOT)/Carthage/Build/iOS/SwiftQueue.framework",
 				"$(SRCROOT)/Carthage/Build/iOS/Reachability.framework",
-				"$(SRCROOT)/Carthage/Build/iOS/CouchbaseLiteSwift.framework",
 			);
 			outputFileListPaths = (
 			);
