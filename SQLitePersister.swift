@@ -20,7 +20,7 @@ class SQLitePersister : JobPersister {
     private let key: String
     let insertQuery = "INSERT INTO QueuedJobs (queueName, taskId, jobInfo) VALUES (?,?,?)"
     let deleteQuery = "DELETE FROM QueuedJobs WHERE queueName = ? AND taskId = ?"
-    let jobsForQueueQuery = "SELECT * FROM QueuedJobs WHERE queueName = '<queuename>'"
+    let jobsForQueueQuery = "SELECT id,queueName,taskId,jobInfo FROM QueuedJobs WHERE queueName = '<queuename>'"
     let restoreQuery = "SELECT DISTINCT queueName FROM QueuedJobs"
     let createTableQuery = "CREATE TABLE IF NOT EXISTS QueuedJobs (id INTEGER PRIMARY KEY AUTOINCREMENT, queueName TEXT NOT NULL, taskId TEXT NOT NULL, jobInfo TEXT NOT NULL)"
 
