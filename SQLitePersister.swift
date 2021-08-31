@@ -6,266 +6,365 @@
 //  Copyright © 2019 Guy Umbright. All rights reserved.
 //
 
-import Foundation
-import SwiftQueue
 import SQLite3
+import SwiftQueue
 
-class SQLitePersister : JobPersister {
-    var db: OpaquePointer?
-    var dbFileURL:URL?
-    var tableCreated = false
+class SQLitePersister: JobPersister {
+    private static let tableName = "QueuedJobs"
     
-    let persisterQueue = DispatchQueue(label: "persisterQueue", qos: .userInitiated)
+    private var createTableQuery: String { """
+        CREATE TABLE IF NOT EXISTS \(SQLitePersister.tableName) (
+            queueName TEXT NOT NULL,
+            taskId TEXT NOT NULL,
+            jobInfo TEXT NOT NULL);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_unique ON \(SQLitePersister.tableName) (queueName, taskId)
+        """}
     
-    private let key: String
-    let insertQuery = "INSERT INTO QueuedJobs (queueName, taskId, jobInfo) VALUES (?,?,?)"
-    let deleteQuery = "DELETE FROM QueuedJobs WHERE queueName = ? AND taskId = ?"
-    let jobsForQueueQuery = "SELECT id,queueName,taskId,jobInfo FROM QueuedJobs WHERE queueName = '<queuename>'"
-    let restoreQuery = "SELECT DISTINCT queueName FROM QueuedJobs"
-    let createTableQuery = "CREATE TABLE IF NOT EXISTS QueuedJobs (id INTEGER PRIMARY KEY AUTOINCREMENT, queueName TEXT NOT NULL, taskId TEXT NOT NULL, jobInfo TEXT NOT NULL)"
-
-    /// Create a Job persister with a custom key
-    public init(key: String = "SQLitePersister") {
-        self.key = key
+    private var database: OpaquePointer?
+    private var dbFileURL: URL?
+    private var tableCreated = false
+    
+    private var getQueuesNameStmt: OpaquePointer?
+    private var getJobForQueueStmt: OpaquePointer?
+    private var insertStmt: OpaquePointer?
+    private var deleteStmt: OpaquePointer?
+    private var deleteAllStmt: OpaquePointer?
+    
+    private let persisterQueue = DispatchQueue(label: "persisterQueue", qos: .userInitiated)
+    
+    private let dbName: String
+    
+    // MARK: - Loggings
+    private func logTrace(_ str: String) {
+        print("SQLitePersister - TRACE: \(str)")
+    }
+    
+    private func logError(_ str: String) {
+        print("SQLitePersister - ERROR: \(str)")
+    }
+    
+    // MARK: - Life cycle
+    /// Create a Job persister with a custom dbName
+    init(dbName: String = "default") {
+        self.dbName = dbName
+        
+        logTrace("persister init \"\(dbName)\"")
         setupDatabase()
     }
-
+    
     deinit {
-        print("persister deinit")
-    }
-    
-    func setupDatabase()
-    {
-        //create the application support dir if needed
-        let fileManager = FileManager.default
-        let urls = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-        if let applicationSupportURL = urls.last {
-            do {
-                try fileManager.createDirectory(at: applicationSupportURL as URL, withIntermediateDirectories: true, attributes: nil)
-            }
-            catch{
-                print("createDirectory failed")
-            }
-        }
+        logTrace("persister deinit")
         
-        dbFileURL = try! FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false)
-            .appendingPathComponent("SQLitePersister.sqlite")  //!!!probs want to be able to pass this in
-    }
-
-    func openDatabase()
-    {
-        if let url = dbFileURL
-        {
-            let openResult = sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil)
-            if openResult == SQLITE_OK {
-                createTable()
-            }
-            else
-            {
-                let errmsg = String(cString: sqlite3_errmsg(db)!)
-                print("error opening database: \(errmsg)")
-
-            }
-        }
-    }
-
-    func closeDatabase()
-    {
-        if sqlite3_close_v2(db) != SQLITE_OK {
-            let errmsg = String(cString: sqlite3_errmsg(db)!)
-            print("error closing database: \(errmsg)")
-        }
-        
-        db = nil
-    }
-    
-    func createTable()
-    {
-        if tableCreated == false
-        {
-            let createResult = sqlite3_exec(db, createTableQuery, nil, nil, nil)
-        
-            if createResult != SQLITE_OK {
-                let errmsg = String(cString: sqlite3_errmsg(db)!)
-                print("error creating table: \(errmsg)")
-            }
-            else
-            {
-                tableCreated = true
-            }
-        }
-    }
-    
-    // Structure as follow
-    // [group:[id:data]]
-    public func restore() -> [String] {
-        //print("SQLitePersister-restore")
-        let queueNames = getQueueNames()
-        //print("SQLitePersister-restore \(queueNames.count) queues found")
-        return queueNames
-    }
-    
-    func getQueueNames() -> [String]
-    {
-        var queueNames : [String] = []
-        
-        var stmt:OpaquePointer?
-        
-        openDatabase()
-        //preparing the query
-        if sqlite3_prepare_v2(db, restoreQuery, -1, &stmt, nil) != SQLITE_OK{
-            let errmsg = String(cString: sqlite3_errmsg(db)!)
-            print("error preparing insert: \(errmsg)")
-        }
-        else
-        {
-            while(sqlite3_step(stmt) == SQLITE_ROW)
-            {
-                let queueName = String(cString: sqlite3_column_text(stmt, 0))
-                queueNames.append(queueName)
-            }
-        }
-        
-        sqlite3_finalize(stmt)
         closeDatabase()
-        return queueNames
-        
+        clearPreparedStmt()
     }
-
+    
+    // MARK: - JobPersister implementations
+    // Structure as follow: [group:[id:data]]
+    func restore() -> [String] {
+        let queueNames = getQueueNames()
+        logTrace("restore \(queueNames.count) queues found")
+        return queueNames
+    }
+    
     /// Restore jobs for a single queue
     /// Returns an array of String. serialized job
-    public func restore(queueName: String) -> [String] {
-        //print("SQLitePersister-restore queueName: \(queueName)")
+    func restore(queueName: String) -> [String] {
         let jobs = restoreJobsForQueue(queueName: queueName)
-        //print("SQLitePersister-restored \(jobs.count) jobs")
+        logTrace("restored for queue \"\(queueName)\": \(jobs.count) job(s)")
         return jobs
     }
     
-    func restoreJobsForQueue(queueName:String) -> [String]
-    {
-        var stmt:OpaquePointer?
-        var jobData : [String] = []
-
-        openDatabase()
-        
-        //preparing the query
-        var query = jobsForQueueQuery
-        query = query.replacingOccurrences(of: "<queuename>", with: queueName)
-        
-        if sqlite3_prepare_v2(db, query, -1, &stmt, nil) != SQLITE_OK{
-            let errmsg = String(cString: sqlite3_errmsg(db)!)
-            print("error preparing insert: \(errmsg)")
-        }
-        else
-        {
-            //traversing through all the records
-            var stepResult = sqlite3_step(stmt)
-            while(stepResult == SQLITE_ROW){
-                let data = String(cString: sqlite3_column_text(stmt, 3))
-                jobData.append(data)
-                stepResult = sqlite3_step(stmt)
-                
-            }
-        }
-
-        sqlite3_finalize(stmt)
-        closeDatabase()
-        return jobData
-    }
-    
     /// Insert a job to a specific queue
-    public func put(queueName: String, taskId: String, data: String) {
-        //print("SQLitePersister-put queueName: \(queueName) taskId:\(taskId) data:\(data)")
+    func put(queueName: String, taskId: String, data: String) {
+        logTrace("put queueName: \(queueName) taskId: \(taskId) data: \(data)")
         persisterQueue.async {
             let result = self.insertJob(queueName: queueName, taskId: taskId, jobInfo: data)
-            //print("SQLitePersister-put result: \(result)")
+            self.logTrace("put result: \(result)")
         }
-   }
-
-    
-    func insertJob(queueName:String, taskId:String, jobInfo:String) -> Bool
-    {
-        let queryString = insertQuery
-        var stmt: OpaquePointer?
-        var result = true
-        
-        openDatabase()
-        if sqlite3_prepare_v2(db, queryString, -1, &stmt, nil) != SQLITE_OK{
-            let errmsg = String(cString: sqlite3_errmsg(db)!)
-            print("error preparing insert: \(errmsg)")
-            result =  false
-        }
-        
-        //binding the parameters
-        if result == true && sqlite3_bind_text(stmt, 1, queueName, -1, nil) != SQLITE_OK{
-            let errmsg = String(cString: sqlite3_errmsg(db)!)
-            print("failure binding name: \(errmsg)")
-            result = false
-        }
-        
-        if result == true && sqlite3_bind_text(stmt, 2, taskId, -1, nil) != SQLITE_OK{
-            let errmsg = String(cString: sqlite3_errmsg(db)!)
-            print("failure binding name: \(errmsg)")
-            result = false
-        }
-        
-        if result == true && sqlite3_bind_text(stmt, 3, jobInfo, -1, nil) != SQLITE_OK{
-            let errmsg = String(cString: sqlite3_errmsg(db)!)
-            print("failure binding name: \(errmsg)")
-            result = false
-        }
-        
-        //executing the query to insert values
-        if result == true && sqlite3_step(stmt) != SQLITE_DONE {
-            let errmsg = String(cString: sqlite3_errmsg(db)!)
-            print("failure inserting job: \(errmsg)")
-            result = false
-        }
-        
-        sqlite3_finalize(stmt)
-
-        closeDatabase()
-        return result
     }
     
     /// Remove a specific task from a queue
-    public func remove(queueName: String, taskId: String) {
-        print("SQLitePersister-remove queueName: \(queueName) taskId:\(taskId)")
+    func remove(queueName: String, taskId: String) {
+        logTrace("remove queueName: \(queueName) taskId: \(taskId)")
         persisterQueue.async {
             self.removeJob(queueName: queueName, taskId: taskId)
         }
     }
-
-    func removeJob(queueName:String, taskId:String)
-    {
-        var deleteStatement: OpaquePointer? = nil
+    
+    func clearAll() {
+        logTrace("clearAll")
+        persisterQueue.async {
+            self.removeAllJobs()
+        }
+    }
+    
+    // MARK: - Prepare Statments
+    private func prepareGetQueuesNameStmt() -> Bool {
+        guard getQueuesNameStmt == nil else { return true }
         
-        openDatabase()
-        if sqlite3_prepare_v2(db, deleteQuery, -1, &deleteStatement, nil) == SQLITE_OK {
-            
-            if sqlite3_bind_text(deleteStatement, 1, queueName, -1, nil) != SQLITE_OK{
-                let errmsg = String(cString: sqlite3_errmsg(db)!)
-                print("failure binding name: \(errmsg)")
+        var result = true
+        let sql = "SELECT DISTINCT queueName FROM \(SQLitePersister.tableName)"
+        if sqlite3_prepare_v2(database, sql, -1, &getQueuesNameStmt, nil) != SQLITE_OK {
+            let errmsg = String(cString: sqlite3_errmsg(database)!)
+            logError("error preparing getQueuesStmt: \(errmsg)")
+            result = false
+        }
+        return result
+    }
+    
+    private func prepareGetJobForQueueStmt() -> Bool {
+        guard getJobForQueueStmt == nil else { return true }
+        
+        var result = true
+        let sql = "SELECT queueName,taskId,jobInfo FROM \(SQLitePersister.tableName) WHERE queueName = ?"
+        if sqlite3_prepare_v2(database, sql, -1, &getJobForQueueStmt, nil) != SQLITE_OK {
+            let errmsg = String(cString: sqlite3_errmsg(database)!)
+            logError("error preparing getJobForQueueStmt: \(errmsg)")
+            result = false
+        }
+        return result
+    }
+    
+    private func prepareInsertStmt() -> Bool {
+        guard insertStmt == nil else { return true }
+        
+        var result = true
+        let sql = "INSERT OR REPLACE INTO \(SQLitePersister.tableName) (queueName, taskId, jobInfo) VALUES (?,?,?)"
+        if sqlite3_prepare_v2(database, sql, -1, &insertStmt, nil) != SQLITE_OK {
+            let errmsg = String(cString: sqlite3_errmsg(database)!)
+            logError("error preparing insertStmt: \(errmsg)")
+            result = false
+        }
+        return result
+    }
+    
+    private func prepareDeleteStmt() -> Bool {
+        guard deleteStmt == nil else { return true }
+        
+        var result = true
+        let sql = "DELETE FROM \(SQLitePersister.tableName) WHERE queueName = ? AND taskId = ?"
+        if sqlite3_prepare_v2(database, sql, -1, &deleteStmt, nil) != SQLITE_OK {
+            let errmsg = String(cString: sqlite3_errmsg(database)!)
+            logError("error preparing deleteStmt: \(errmsg)")
+            result = false
+        }
+        return result
+    }
+    
+    private func prepareDeleteAllStmt() -> Bool {
+        guard deleteAllStmt == nil else { return true }
+        
+        var result = true
+        let sql = "DROP TABLE \(SQLitePersister.tableName)"
+        if sqlite3_prepare_v2(database, sql, -1, &deleteAllStmt, nil) != SQLITE_OK {
+            let errmsg = String(cString: sqlite3_errmsg(database)!)
+            logError("error preparing deleteAllStmt: \(errmsg)")
+            result = false
+        }
+        return result
+    }
+    
+    // MARK: - Private methods
+    private func setupDatabase() {
+        // create the application support dir if needed
+        let documentsURL = URL(fileURLWithPath: documentsPath())
+        let sqliteFileURL = documentsURL.appendingPathComponent("SQLitePersister").appendingPathComponent("\(dbName).sqlite")
+        let sqliteDirectoryUrl = sqliteFileURL.deletingLastPathComponent()
+        
+        if !FileManager.default.fileExists(atPath: sqliteDirectoryUrl.absoluteString) {
+            do {
+                try FileManager.default.createDirectory(at: sqliteDirectoryUrl, withIntermediateDirectories: true, attributes: nil)
+            } catch {
+                logError("fail to create database directory: \(error)")
             }
-            
-            if sqlite3_bind_text(deleteStatement, 2, taskId, -1, nil) != SQLITE_OK{
-                let errmsg = String(cString: sqlite3_errmsg(db)!)
-                print("failure binding name: \(errmsg)")
-            }
-
-            if sqlite3_step(deleteStatement) == SQLITE_DONE {
-                print("Successfully deleted row.")
-            } else {
-                let errmsg = String(cString: sqlite3_errmsg(db)!)
-                print("Could not delete row: \(errmsg)")
-            }
-        } else {
-            let errmsg = String(cString: sqlite3_errmsg(db)!)
-            print("DELETE statement could not be prepared:\(errmsg)")
         }
         
-        sqlite3_finalize(deleteStatement)
-        closeDatabase()
+        dbFileURL = sqliteFileURL
+    }
+    
+    private func openDatabase() -> Bool {
+        var result = false
+        
+        if let url = dbFileURL {
+            let openResult = sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil)
+            if openResult == SQLITE_OK {
+                result = createTable()
+            } else {
+                let errmsg = String(cString: sqlite3_errmsg(database)!)
+                logError("error opening database: \(errmsg)")
+            }
+        }
+        
+        return result
+    }
+    
+    @discardableResult
+    private func closeDatabase() -> Bool {
+        var result = true
+        
+        if sqlite3_close_v2(database) != SQLITE_OK {
+            let errmsg = String(cString: sqlite3_errmsg(database)!)
+            logError("error closing database: \(errmsg)")
+            result = false
+        }
+        
+        database = nil
+        
+        return result
+    }
+    
+    private func createTable() -> Bool {
+        if !tableCreated {
+            let createResult = sqlite3_exec(database, createTableQuery, nil, nil, nil)
+            
+            if createResult != SQLITE_OK {
+                let errmsg = String(cString: sqlite3_errmsg(database)!)
+                logError("error creating table: \(errmsg)")
+            } else {
+                tableCreated = true
+            }
+        }
+        
+        return tableCreated
+    }
+    
+    private func getQueueNames() -> [String] {
+        var queueNames: [String] = []
+        
+        guard openDatabase(), prepareGetQueuesNameStmt() else { return queueNames }
+        
+        defer {
+            sqlite3_reset(getQueuesNameStmt)
+            closeDatabase()
+        }
+        
+        while sqlite3_step(getQueuesNameStmt) == SQLITE_ROW {
+            let queueName = String(cString: sqlite3_column_text(getQueuesNameStmt, 0))
+            queueNames.append(queueName)
+        }
+        
+        return queueNames
+    }
+    
+    private func restoreJobsForQueue(queueName: String) -> [String] {
+        var jobData: [String] = []
+        
+        guard openDatabase(), prepareGetJobForQueueStmt() else { return jobData }
+        
+        defer {
+            sqlite3_reset(getJobForQueueStmt)
+            closeDatabase()
+        }
+        
+        if sqlite3_bind_text(getJobForQueueStmt, 1, (queueName as NSString).utf8String, -1, nil) != SQLITE_OK {
+            let errmsg = String(cString: sqlite3_errmsg(database)!)
+            logError("error binding `queueName` for getJobForQueueStmt: \(errmsg)")
+        } else {
+            // traversing through all the records
+            var stepResult = sqlite3_step(getJobForQueueStmt)
+            while stepResult == SQLITE_ROW {
+                let data = String(cString: sqlite3_column_text(getJobForQueueStmt, 2))
+                jobData.append(data)
+                stepResult = sqlite3_step(getJobForQueueStmt)
+            }
+        }
+        
+        return jobData
+    }
+    
+    private func insertJob(queueName: String, taskId: String, jobInfo: String) -> Bool {
+        guard openDatabase(), prepareInsertStmt() else { return false }
+        
+        defer {
+            sqlite3_reset(insertStmt)
+            closeDatabase()
+        }
+        
+        var result = true
+        
+        // binding the parameters
+        if result && sqlite3_bind_text(insertStmt, 1, (queueName as NSString).utf8String, -1, nil) != SQLITE_OK {
+            let errmsg = String(cString: sqlite3_errmsg(database)!)
+            logError("failure binding queueName: \(errmsg)")
+            result = false
+        }
+        
+        if result && sqlite3_bind_text(insertStmt, 2, (taskId as NSString).utf8String, -1, nil) != SQLITE_OK {
+            let errmsg = String(cString: sqlite3_errmsg(database)!)
+            logError("failure binding taskId: \(errmsg)")
+            result = false
+        }
+        
+        if result && sqlite3_bind_text(insertStmt, 3, (jobInfo as NSString).utf8String, -1, nil) != SQLITE_OK {
+            let errmsg = String(cString: sqlite3_errmsg(database)!)
+            logError("failure binding jobInfo: \(errmsg)")
+            result = false
+        }
+        
+        // executing the query to insert values
+        if result && sqlite3_step(insertStmt) != SQLITE_DONE {
+            let errmsg = String(cString: sqlite3_errmsg(database)!)
+            logError("failure inserting job: \(errmsg)")
+            result = false
+        }
+        
+        return result
+    }
+    
+    private func removeJob(queueName: String, taskId: String) {
+        guard openDatabase(), prepareDeleteStmt() else { return }
+        
+        defer {
+            sqlite3_reset(deleteStmt)
+            closeDatabase()
+        }
+        
+        if sqlite3_bind_text(deleteStmt, 1, queueName, -1, nil) != SQLITE_OK {
+            let errmsg = String(cString: sqlite3_errmsg(database)!)
+            logError("failure binding name: \(errmsg)")
+        }
+        
+        if sqlite3_bind_text(deleteStmt, 2, taskId, -1, nil) != SQLITE_OK {
+            let errmsg = String(cString: sqlite3_errmsg(database)!)
+            logError("failure binding name: \(errmsg)")
+        }
+        
+        if sqlite3_step(deleteStmt) == SQLITE_DONE {
+            logTrace("Successfully deleted row.")
+        } else {
+            let errmsg = String(cString: sqlite3_errmsg(database)!)
+            logError("Could not delete row: \(errmsg)")
+        }
+    }
+    
+    private func removeAllJobs() {
+        guard openDatabase(), prepareDeleteAllStmt() else { return }
+        
+        defer {
+            sqlite3_reset(deleteAllStmt)
+            closeDatabase()
+        }
+        
+        if sqlite3_step(deleteAllStmt) == SQLITE_DONE {
+            logTrace("Successfully deleted all rows.")
+        } else {
+            let errmsg = String(cString: sqlite3_errmsg(database)!)
+            logError("Could not delete all rows: \(errmsg)")
+        }
+    }
+    
+    private func clearPreparedStmt() {
+        sqlite3_finalize(getQueuesNameStmt)
+        sqlite3_finalize(getJobForQueueStmt)
+        sqlite3_finalize(insertStmt)
+        sqlite3_finalize(deleteStmt)
+        sqlite3_finalize(deleteAllStmt)
+        
+        getQueuesNameStmt = nil
+        getJobForQueueStmt = nil
+        insertStmt = nil
+        deleteStmt = nil
+        deleteAllStmt = nil
     }
 }
-
