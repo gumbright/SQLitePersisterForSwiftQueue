@@ -348,6 +348,8 @@ class SQLitePersister: JobPersister {
         
         if sqlite3_step(deleteAllStmt) == SQLITE_DONE {
             logTrace("Successfully deleted all rows.")
+            tableCreated = false
+            _ = createTable()
         } else {
             let errmsg = String(cString: sqlite3_errmsg(database)!)
             logError("Could not delete all rows: \(errmsg)")
